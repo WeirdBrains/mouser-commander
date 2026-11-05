@@ -476,6 +476,10 @@ pub struct CommanderMode {
     last_scrub: Option<std::time::Instant>,
     /// The ssh side channel while the listing is remote.
     ssh: Option<fetch::Remote>,
+    /// The folder the shell last reported (local, or the remote shell's).
+    /// Commander follows the shell only when this changes (a `cd` typed
+    /// there); its own navigation never moves the shell (`s` syncs).
+    shell_dir: Option<PathBuf>,
     remote_meta: Arc<HashMap<PathBuf, (u64, i64)>>,
     /// The remote file open in the viewer (or player).
     open_remote: Option<(PathBuf, fetch::Handle)>,
@@ -599,11 +603,6 @@ impl Default for CommanderMode {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// `cd -- '<path>'` (run with [`Effect::Run`], keeping the typed line).
-pub fn cd_line(p: &Path) -> String {
-    format!("cd -- {}", cmdr::shell_quote(&p.to_string_lossy()))
 }
 
 fn item(rect: Rect, text: impl Into<String>, style: PanelStyle, action: UiAction) -> PanelItem {
@@ -739,6 +738,7 @@ impl CommanderMode {
             fs_gen: Arc::new(AtomicU64::new(0)),
             last_scrub: None,
             ssh: None,
+            shell_dir: None,
             remote_meta: Arc::new(HashMap::new()),
             open_remote: None,
             heads: HashMap::new(),
@@ -1547,12 +1547,20 @@ impl Mode for CommanderMode {
     }
 
     fn cwd_changed(&mut self, dir: &Path) {
-        if self.ssh.take().is_some() {
+        let was_remote = self.ssh.take().is_some();
+        if was_remote {
             self.previews.set_remote(None);
             self.open_remote = None;
             self.heads.clear();
             self.texts.clear();
         }
+        // Every prompt reports the shell's folder; commander follows only a
+        // change there (a `cd` typed in the shell), not the shell staying put
+        // while commander browses elsewhere.
+        if !was_remote && self.c.remote.is_none() && self.shell_dir.as_deref() == Some(dir) && self.c.cwd.is_some() {
+            return;
+        }
+        self.shell_dir = Some(dir.to_path_buf());
         self.c.set_cwd(Some(dir.to_path_buf()));
     }
 
@@ -1567,6 +1575,17 @@ impl Mode for CommanderMode {
     }
 
     fn remote_changed(&mut self, label: &str, dir: Option<&Path>, listing: Option<Result<Vec<Entry>, String>>) {
+        // The remote shell staying in a folder commander has browsed away from.
+        if let Some(d) = dir
+            && self.c.remote.as_deref() == Some(label)
+            && self.shell_dir.as_deref() == Some(d)
+            && self.c.cwd.as_deref().is_some_and(|c| c != d)
+        {
+            return;
+        }
+        if dir.is_some() {
+            self.shell_dir = dir.map(Path::to_path_buf);
+        }
         let fresh = listing.as_ref().is_some_and(|l| l.is_ok());
         self.c.set_remote(label.to_string(), dir.map(Path::to_path_buf), listing);
         if fresh {
@@ -1592,14 +1611,11 @@ impl Mode for CommanderMode {
                 let e = self.action(id, if id == "scroll" { 1 } else { 0 });
                 return Some(if e == Effect::Pass { Effect::None } else { e });
             }
-            // Other plain keys are swallowed (nothing types into the hidden
-            // shell); alt keys fall through to the bindings.
-            if !(bytes.len() > 1 && bytes[0] == 0x1b) {
-                return Some(Effect::None);
-            }
+            // Other keys go to the bindings (the host swallows the rest while
+            // the mode has focus, so nothing types into the hidden shell).
             return None;
         }
-        // Bound alt keys still work while searching.
+        // Arrows and other escape sequences still reach the bindings while searching.
         if bytes.len() > 1 && bytes[0] == 0x1b {
             return None;
         }
@@ -1756,16 +1772,17 @@ impl Mode for CommanderMode {
                 self.c.overlay = None
             }
             "keys" => return Effect::ShowKeys,
+            "sync" => return self.sync(),
             "up_to" => {
                 let mut d = self.c.cwd.clone();
                 for _ in 0..arg.max(0) {
                     d = d.and_then(|d| d.parent().map(Path::to_path_buf));
                 }
                 return match d {
-                    Some(d) => match self.c.jump(d) {
-                        cmdr::Effect::Cd(p) => Effect::Cd(p),
-                        _ => Effect::None,
-                    },
+                    Some(d) => {
+                        let e = self.c.jump(d);
+                        self.effect(e)
+                    }
                     None => Effect::None,
                 };
             }
@@ -2128,10 +2145,44 @@ impl CommanderMode {
         ALL.iter().filter(|k| self.wants_key(k.as_bytes())).map(|k| k.to_string()).collect()
     }
 
+    /// Show `dir` without touching the shell: list it here, or over the ssh
+    /// side channel when the listing is remote.
+    fn browse(&mut self, dir: PathBuf) -> Effect {
+        match self.c.remote.clone() {
+            None => self.c.set_cwd(Some(dir)),
+            Some(label) => {
+                let listing = match &self.ssh {
+                    Some(r) => r.run(&crate::remote::listing_command(&dir)).map(|out| crate::remote::parse_ls(&String::from_utf8_lossy(&out), &dir)),
+                    None => Err(format!("{}: no ssh side channel to list it", dir.display())),
+                };
+                let fresh = listing.is_ok();
+                self.c.set_remote(label, Some(dir), Some(listing));
+                if fresh {
+                    let secs = |t: Option<std::time::SystemTime>| {
+                        t.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64)
+                    };
+                    self.remote_meta = Arc::new(self.c.entries.iter().map(|e| (e.path.clone(), (e.size, secs(e.modified)))).collect());
+                    self.previews.set_remote(self.ssh.clone().map(|remote| RemoteCtx { remote, meta: self.remote_meta.clone() }));
+                }
+            }
+        }
+        Effect::None
+    }
+
+    /// `s` (sync): move the shell to commander's folder. The host does it silently
+    /// through the shell integration (nothing typed, no history), or says why not.
+    fn sync(&mut self) -> Effect {
+        match self.c.cwd.clone() {
+            Some(d) => Effect::Cd(d),
+            None => Effect::Say("commander has no folder to sync to".into()),
+        }
+    }
+
     fn effect(&mut self, e: cmdr::Effect) -> Effect {
         match e {
             cmdr::Effect::None => Effect::None,
-            cmdr::Effect::Cd(p) => Effect::Cd(p),
+            // Commander's own navigation: list the folder here; the shell stays.
+            cmdr::Effect::Cd(p) => self.browse(p),
             // The in-app player; the desktop opener only without ffmpeg.
             // Remote media: ffmpeg reads it through the fetch layer's local
             // HTTP server (seeks become prioritised ranged reads).
@@ -2402,8 +2453,10 @@ pub(crate) mod tests {
         assert_eq!(m.action("item", 1), Effect::None, "first click selects");
         m.last_click = None;
         assert_eq!(m.action("item", 1), Effect::None, "a slow second click only selects");
-        let cd = m.action("item", 1);
-        assert_eq!(cd, Effect::Cd(t.path().join("sub dir")));
+        assert_eq!(m.action("item", 1), Effect::None, "opening a folder browses it; the shell stays");
+        assert_eq!(m.c.cwd.as_deref(), Some(t.path().join("sub dir").as_path()));
+        assert_eq!(m.action("sync", 0), Effect::Cd(t.path().join("sub dir")), "s moves the shell there");
+        m.action("back", 0);
         m.action("switch_view", 0);
         let v = m.view(&ctx(), &k);
         assert!(v.dock.unwrap().items.iter().filter(|i| matches!(i.style, PanelStyle::Tile { .. })).count() == 2);
@@ -2485,7 +2538,7 @@ pub(crate) mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
             let v = m.view(&ctx(), &k);
             if !v.images.is_empty() {
-                assert!(v.dock.unwrap().items.iter().any(|i| i.text.contains("alt+k play/pause")));
+                assert!(v.dock.unwrap().items.iter().any(|i| i.text.contains("k play/pause")));
                 got = true;
                 break;
             }
@@ -2519,6 +2572,30 @@ pub(crate) mod tests {
         assert!(m.player.is_none(), "closing the viewer stops playback");
     }
 
+    #[test]
+    fn browsing_never_moves_the_shell_and_a_typed_cd_still_leads() {
+        let t = tempfile::tempdir().unwrap();
+        for d in ["a", "b", "c"] {
+            std::fs::create_dir(t.path().join(d)).unwrap();
+        }
+        let mut m = CommanderMode::new();
+        m.cwd_changed(t.path());
+        m.c.selected = m.c.visible().iter().position(|e| e.name == "a").unwrap();
+        assert_eq!(m.action("open", 0), Effect::None, "no cd typed, nothing sent");
+        assert_eq!(m.c.cwd.as_deref(), Some(t.path().join("a").as_path()));
+        // The next prompt reports the shell where it was: commander stays.
+        m.cwd_changed(t.path());
+        assert_eq!(m.c.cwd.as_deref(), Some(t.path().join("a").as_path()));
+        // A cd typed in the shell moves commander.
+        m.cwd_changed(&t.path().join("c"));
+        assert_eq!(m.c.cwd.as_deref(), Some(t.path().join("c").as_path()));
+        // s (sync): the host moves the shell; its report lands where commander is.
+        m.c.selected = 0;
+        assert_eq!(m.action("sync", 0), Effect::Cd(t.path().join("c")));
+        m.cwd_changed(&t.path().join("c"));
+        assert_eq!(m.c.cwd.as_deref(), Some(t.path().join("c").as_path()));
+    }
+
     // POSIX paths in the header (Windows paths are one segment).
     #[cfg(unix)]
     #[test]
@@ -2530,17 +2607,16 @@ pub(crate) mod tests {
         m.cwd_changed(&t.path().join("a/b"));
         let d = m.view(&ctx(), &k).dock.unwrap();
         let back = d.items.iter().find(|i| i.text.starts_with("‹ back")).expect("back control");
-        assert_eq!(back.text, "‹ back (alt+p)");
+        assert_eq!(back.text, "‹ back (u)");
         assert_eq!(back.action, act("parent", 0));
         assert!(!d.items.iter().any(|i| i.text.contains(" ..") || i.text.ends_with(" .")), "no . or ..");
         // The parent's segment jumps one level up; the current one is not a link.
         assert!(d.items.iter().any(|i| i.text == "/a" && i.action == act("up_to", 1)));
         assert!(d.items.iter().any(|i| i.text == "/b" && i.action == UiAction::None));
-        assert_eq!(m.action("up_to", 2), Effect::Cd(t.path().to_path_buf()));
-        assert_eq!(m.action("parent", 0), Effect::Cd(t.path().join("a")));
-        // Coming back up selects the folder we left.
-        m.cwd_changed(&t.path().join("a"));
-        assert_eq!(m.c.selected_entry().unwrap().name, "b");
+        assert_eq!(m.action("up_to", 2), Effect::None);
+        assert_eq!(m.c.cwd.as_deref(), Some(t.path()));
+        assert_eq!(m.action("parent", 0), Effect::None);
+        assert_eq!(m.c.cwd.as_deref(), t.path().parent());
         // At / the control is disabled.
         m.cwd_changed(Path::new("/"));
         let d = m.view(&ctx(), &k).dock.unwrap();
@@ -2705,7 +2781,13 @@ pub(crate) mod tests {
         assert!(d.items.iter().any(|i| i.text == "image · remote"), "no side channel: a badge, nothing read");
         assert!(m.previews().decoded().is_empty());
         m.c.selected = 1;
-        assert_eq!(m.action("open", 0), Effect::Cd("/srv/app".into()), "cd over the PTY");
+        assert_eq!(m.action("open", 0), Effect::None, "browsing never types into the remote shell");
+        assert_eq!(m.c.cwd.as_deref(), Some(Path::new("/srv/app")));
+        assert!(m.c.error.as_deref().is_some_and(|e| e.contains("no ssh side channel")), "{:?}", m.c.error);
+        // The remote shell still reports /srv: commander stays where it browsed.
+        m.remote_changed("me@web1", Some(Path::new("/srv")), Some(Ok(vec![ent("app", true)])));
+        assert_eq!(m.c.cwd.as_deref(), Some(Path::new("/srv/app")));
+        assert_eq!(m.action("sync", 0), Effect::Cd("/srv/app".into()), "s asks the host to move the shell");
     }
 
     #[test]
@@ -2714,16 +2796,16 @@ pub(crate) mod tests {
         image::RgbaImage::from_pixel(400, 300, image::Rgba([0, 255, 0, 255])).save(t.path().join("p.png")).unwrap();
         std::fs::write(t.path().join("a.txt"), "hello").unwrap();
         let k = Keymap::new(cmdr::BINDINGS);
-        assert_eq!(k.label("fullscreen"), "alt+e");
+        assert_eq!(k.label("fullscreen"), "f");
         let mut m = CommanderMode::new();
         m.cwd_changed(t.path());
-        // Not on a text file (alt+e goes to the shell there).
+        // Not on a text file (f does nothing there).
         m.c.overlay = Some(Overlay::Preview(t.path().join("a.txt")));
         assert_eq!(m.action("fullscreen", 0), Effect::Pass);
         m.c.overlay = Some(Overlay::Preview(t.path().join("p.png")));
         let v = wait_loaded(&mut m, 1);
         assert!(!v.fullscreen);
-        let btn = v.dock.as_ref().unwrap().items.iter().find(|i| i.text.starts_with("fullscreen (alt+e)")).expect("header button").action.clone();
+        let btn = v.dock.as_ref().unwrap().items.iter().find(|i| i.text.starts_with("fullscreen (f)")).expect("header button").action.clone();
         assert_eq!(btn, act("fullscreen", 0));
         assert_eq!(m.action("fullscreen", 0), Effect::None);
         let c = ctx();
@@ -2731,7 +2813,7 @@ pub(crate) mod tests {
         assert!(v.fullscreen);
         let d = v.dock.as_ref().unwrap();
         assert_eq!(d.rect, Rect { x: 0, y: 0, w: c.viewport.width, h: c.viewport.height }, "the whole window");
-        assert!(d.items.iter().any(|i| i.text.starts_with("exit fullscreen (alt+e / esc)")), "controls show at first");
+        assert!(d.items.iter().any(|i| i.text.starts_with("exit fullscreen (f / esc)")), "controls show at first");
         // Letterboxed: the whole picture, centred, inside the window.
         let r = v.images[0].rect;
         assert!(r.x >= 0 && r.y >= 0 && r.x + r.w <= c.viewport.width && r.y + r.h <= c.viewport.height, "{r:?}");
@@ -2744,10 +2826,11 @@ pub(crate) mod tests {
         // A pointer move brings them back.
         m.action("pointer_move", pack_xy(300, 300));
         assert!(m.view(&c, &k).dock.unwrap().items.iter().any(|i| i.text.starts_with("exit fullscreen")));
-        // Keys: arrows and space are the view's, other typing is swallowed; alt keys still bind.
-        assert!(m.wants_text() && m.wants_key(b"\x1b[C") && !m.wants_key(b"\x1be"));
-        assert_eq!(m.text(b"x"), Some(Effect::None));
-        assert_eq!(m.text(b"\x1be"), None);
+        // Keys: arrows and space are the view's, other keys go to the bindings
+        // (the host drops unbound ones while commander has the keyboard).
+        assert!(m.wants_text() && m.wants_key(b"\x1b[C") && !m.wants_key(b"f"));
+        assert_eq!(m.text(b"x"), None);
+        assert_eq!(m.text(b"f"), None);
         assert_eq!(m.text(b"\x1b"), None, "Esc goes to escape()");
         // Resize: the rect follows the window.
         let small = Context { viewport: UiViewport { width: 640, height: 480, cell_w: 9, cell_h: 18 }, area: Rect { x: 0, y: 8, w: 640, h: 472 } };
