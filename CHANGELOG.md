@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-05
+
 ### Added
 
 - Back works like `popd`: entering a folder or file pushes where you were (logical path, selection, scroll) and back restores it exactly; with an empty stack back goes to the parent of the logical path, never a symlink target's real parent. Remote folders too. See docs/usage.md.
