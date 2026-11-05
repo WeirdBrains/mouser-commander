@@ -8,6 +8,10 @@
 
 - Audio output from Mouser's preferences: `audio.host` (auto/jack/alsa; auto tries JACK first, PipeWire's JACK included) and `audio.output_device` (falls back to the default with a notice). The player's status shows the host. JACK is the `jack` feature, on in the released Linux binaries. See docs/usage.md §Audio.
 
+### Fixed
+
+- Windows: audio hosts and devices are probed on one thread, so parallel probes no longer crash WASAPI.
+
 ## [0.1.2] - 2026-11-05
 
 ### Added
