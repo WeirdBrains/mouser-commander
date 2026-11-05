@@ -28,8 +28,9 @@ jobs:
           rustup default stable
       - name: Install Linux deps
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev libwayland-dev libxkbcommon-dev libfontconfig1-dev libasound2-dev pkg-config cmake clang libclang-dev libvulkan-dev libgl1-mesa-dri libegl1
-      - run: cargo build --locked --release --target ${{ matrix.target }}
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev libwayland-dev libxkbcommon-dev libfontconfig1-dev libasound2-dev libjack-jackd2-dev pkg-config cmake clang libclang-dev libvulkan-dev libgl1-mesa-dri libegl1
+      # JACK output: libjack is loaded at run time (a no-op outside Linux).
+      - run: cargo build --locked --release --features jack --target ${{ matrix.target }}
       - name: Package
         shell: bash
         run: |

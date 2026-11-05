@@ -35,3 +35,19 @@ It is a separate program Mouser starts once and keeps running, speaking the
 [mode protocol](https://github.com/WeirdBrains/mouser-mode-api/blob/main/docs/protocol.md)
 over stdio, with images through shared memory. Mouser's own end-to-end tests drive it
 through Mouser's adapter, so those tests live in [Mouser](https://github.com/WeirdBrains/mouser).
+
+## Audio
+
+The player's sound goes where Mouser's preferences say (`[audio]` in
+`$MOUSER_HOME/preferences.toml`, Mouser's docs/preferences.md §Audio):
+
+- `audio.host`: `auto` (JACK when a JACK server answers, PipeWire's JACK included,
+  else ALSA), `jack` or `alsa`. Linux only; macOS uses CoreAudio, Windows WASAPI.
+- `audio.output_device`: a device of that host; unset or `default` = its default.
+  A device that is gone falls back to the default and the player says so.
+
+The status beside play/pause shows the host playing (`playing · JACK`). JACK is the
+`jack` cargo feature: building it needs the JACK headers and `jack.pc` (Debian/Ubuntu
+`libjack-jackd2-dev`, Arch `pipewire-jack` or `jack2`); libjack is loaded at run
+time, so a JACK build still plays through ALSA without it. The released Linux
+binaries include it; `cargo install mouser-commander --features jack` does too.

@@ -1,6 +1,6 @@
 [package]
 name = "mouser-commander"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.88"
 license = "BSD-3-Clause"
@@ -32,6 +32,10 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 time = { version = "0.3.36", features = ["macros", "formatting"] }
+
+[features]
+# JACK output (docs/usage.md §Audio); needs the JACK headers to build.
+jack = ["cpal/jack"]
 
 [lints.rust]
 rust_2018_idioms = "warn"
