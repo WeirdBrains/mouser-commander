@@ -5,7 +5,7 @@
 # With remote.read it shows the remote shell's folder and previews its files
 # over the session's own ssh connection, as the built-in mode does.
 name = "commander"
-version = "0.1.0"
+version = "0.1.1"
 description = "commander mode: the shell's folder as a list, grid or carousel above the prompt, with previews"
 permissions = ["files.read", "shell.type", "remote.read"]
 
