@@ -82,3 +82,37 @@ The status beside play/pause shows the host playing (`playing · JACK`). JACK is
 `libjack-jackd2-dev`, Arch `pipewire-jack` or `jack2`); libjack is loaded at run
 time, so a JACK build still plays through ALSA without it. The released Linux
 binaries include it; `cargo install mouser-commander --features jack` does too.
+
+## Context menu
+
+Right-click in the view (or `.` while commander has the keyboard, Mouser 1.4).
+
+Commander's menus (keys are the defaults):
+
+| Where | Entries |
+| --- | --- |
+| a file | open (Enter), copy, copy to…, move to…, rename…, delete…, copy path, mark (Space), pipe (`\|`), back (`u`) |
+| an image, video or audio file | the same, with play (Enter) and play / view fullscreen |
+| a folder | open (Enter), sync the shell here, the file entries, paste, back (`u`) |
+| the empty area | back, sync (`s`), new folder…, paste, sort by name / modified / size, reverse, switch view (`v`), larger / smaller tiles (`z` / `x`), dotfiles (`h`), search (`/`), mark all (`*`), first / last, options (`o`), manual (`m`) |
+| image view, fullscreen or not | zoom in / out (`=` / `-`), fit (`0`), 100% (`1`), pan (arrows; ← / → step images when not zoomed), fullscreen / exit fullscreen (`f`), copy path, close (`q`) |
+| player, fullscreen or not | play / pause (`k`), back / forward 10 s (`j` / `l`), volume (`-` / `=`), fullscreen / exit fullscreen (`f`), copy path, close (`q`) |
+| text, Markdown, PDF or document view, the manual | scroll (↑ / ↓), page up / down, previous / next file (← / →), copy text, copy path, close (`q`) |
+
+File changes never happen straight away: copy to, move to, rename and new folder
+first ask for the destination or name in commander's prompt line (Enter goes on,
+Esc cancels), then every change (delete and paste too) waits for your yes on
+Mouser's approval card, which lists what will change. Nothing is ever
+overwritten: a target that exists stops the change. Delete is permanent (folders
+with everything in them); the card says so. `copy` remembers the items for
+`paste` in another folder; `copy path` and `copy text` put text on the
+clipboard. File changes are local only (greyed out in a remote folder), and the
+commander plugin declares `files.write` for them. The text view has no zoom of
+its own (use Mouser's font size, ctrl+= / ctrl+-).
+
+## Panel size
+
+Mouser 1.4 lets you size the mode panel (`F` fullscreen, `]` / `[` taller /
+shorter while the mode has the keyboard, or drag its bottom edge); this plugin
+lays its panel out to that size (`dock` in `view.resized`). Older Mouser
+versions keep the plugin's own height.

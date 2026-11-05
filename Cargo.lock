@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "mouser-commander"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "cpal",
  "dirs",
@@ -661,9 +661,9 @@ dependencies = [
 
 [[package]]
 name = "mouser-mode-api"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "706cbe0c11e7d32ee3c5c9d5823ed89631cfe6f7dea63b34062c0615d34ea0cb"
+checksum = "04b450480f5b08215944b67bcd0026f68bea33d7a73ca959d73894111ce542fe"
 dependencies = [
  "memmap2",
  "pulldown-cmark",

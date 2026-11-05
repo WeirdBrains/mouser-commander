@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-05
+
+### Added
+
+- Context menu (right-click, or `.` in Mouser 1.4): every action for the item and view (file, media file, folder, empty area, image view and player, fullscreen or not, text view), each with its key, from one action registry (docs/usage.md §Context menu).
+- New actions: copy / paste, copy to…, move to…, rename…, delete…, new folder…, copy path, copy text, sort. Each file change asks for a name or destination in the prompt line, then waits for Mouser's approval card; nothing is overwritten; local folders only. The plugin now declares `files.write`.
+- The panel follows the size chosen in Mouser (`dock` in `view.resized`). Built on mouser-mode-api 0.2.
+
 ## [0.1.3] - 2026-11-05
 
 ### Changed
